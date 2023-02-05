@@ -1,4 +1,11 @@
 import torch
+import torch.nn as nn
+from torch.nn import functional as F
+
+import time
+
+device = "mps" if torch.backends.mps.is_available() else "cpu"
+device = torch.device(device)
 
 with open("input.txt", 'r', encoding="utf-8") as data:
     text = data.read()
@@ -25,14 +32,54 @@ def get_batch(split = "train"):
     idx = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack([data[i:i+block_size] for i in idx])
     y = torch.stack([data[i+1: i+block_size+1] for i in idx])
-    return x,y
+    return x.to(device),y.to(device)
 
-x, y = get_batch()
-print(x.shape)
-print(x)
-print(y.shape)
-print(y)
+xb, yb = get_batch()
 
-for i in range(batch_size):
-    for j in range(block_size):
-        print(f"context: {x[i,:j+1].tolist()}, target: {y[i,j]}")
+
+class BigramLanguageModel(nn.Module):
+    def __init__(self, vocab_size):
+        super().__init__()
+        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+    
+    def forward(self, idx, target = None):
+        logits = self.token_embedding_table(idx)
+        loss = None
+        if target != None:
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+
+            target = target.view(B*T)
+            loss = F.cross_entropy(logits, target)
+        return logits, loss
+    
+    def generate(self, idx, max_num_tokens):
+        for _ in range(max_num_tokens):
+            logits, _ = self(idx, None) #B, T, C
+            logits = logits[:, -1, :]
+            probs = F.softmax(logits, dim=-1)
+            pred = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat([idx, pred], dim=1)
+        return idx
+
+
+model = BigramLanguageModel(vocab_size).to(device)
+out, loss = model(xb, yb)
+optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3)
+
+batch_size = 32
+start = time.time()
+for i in range(1000):
+
+    xb, yb = get_batch()
+
+    _, loss = model(xb, yb)
+
+    optimizer.zero_grad(set_to_none = True)
+    loss.backward()
+    optimizer.step()
+print(i, loss.item(), time.time() - start)
+
+#inp = torch.zeros((1,1), dtype=torch.long).to(device)
+#out = model.generate(inp, max_num_tokens=500)[0].tolist()
+#print(decode(out))
